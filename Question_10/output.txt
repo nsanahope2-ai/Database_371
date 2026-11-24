@@ -1,0 +1,402 @@
+DROP SCHEMA IF EXISTS q10_scholarship CASCADE;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:8: NOTICE:  drop cascades to 8 other objects
+DETAIL:  drop cascades to table q10_scholarship.students
+drop cascades to table q10_scholarship.applications
+drop cascades to table q10_scholarship.decision_audit
+drop cascades to function q10_scholarship.fn_scholarship_eligible(integer,numeric,numeric)
+drop cascades to function q10_scholarship.pr_assess_application(integer)
+drop cascades to function q10_scholarship.fn_trg_audit_application_status()
+drop cascades to view q10_scholarship.v_approved_applicants
+drop cascades to function q10_scholarship.pr_assess_pending()
+DROP SCHEMA
+CREATE SCHEMA q10_scholarship;
+CREATE SCHEMA
+SET search_path TO q10_scholarship, public;
+SET
+CREATE TABLE students (
+    student_id     SERIAL PRIMARY KEY,
+    student_number VARCHAR(20)  NOT NULL UNIQUE,
+    full_name      VARCHAR(100) NOT NULL
+);
+CREATE TABLE
+CREATE TABLE applications (
+    application_id     SERIAL PRIMARY KEY,
+    student_id         INTEGER       NOT NULL REFERENCES students(student_id)
+                                     ON UPDATE CASCADE ON DELETE RESTRICT,
+    age_at_application INTEGER       NOT NULL CHECK (age_at_application > 0),
+    monthly_income     NUMERIC(12,2) NOT NULL CHECK (monthly_income >= 0),
+    average_mark       NUMERIC(5,2)  NOT NULL CHECK (average_mark BETWEEN 0 AND 100),
+    submitted_on       DATE          NOT NULL DEFAULT CURRENT_DATE,
+    status             VARCHAR(15)   NOT NULL DEFAULT 'PENDING'
+                                     CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED'))
+);
+CREATE TABLE
+CREATE TABLE decision_audit (
+    audit_id       SERIAL PRIMARY KEY,
+    application_id INTEGER     NOT NULL REFERENCES applications(application_id)
+                               ON UPDATE CASCADE ON DELETE CASCADE,
+    old_status     VARCHAR(15) NOT NULL CHECK (old_status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    new_status     VARCHAR(15) NOT NULL CHECK (new_status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    changed_at     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE
+INSERT INTO students (student_number, full_name) VALUES
+    ('STU-2026-001', 'Mwansa Kangwa'),
+    ('STU-2026-002', 'Thandiwe Zulu'),
+    ('STU-2026-003', 'Kelvin Tembo'),
+    ('STU-2026-004', 'Natasha Lungu'),
+    ('STU-2026-005', 'Chileshe Mwanza'),
+    ('STU-2026-006', 'Bupe Nkonde');
+INSERT 0 6
+INSERT INTO applications (
+    student_id, age_at_application, monthly_income, average_mark, submitted_on, status
+) VALUES
+    (1, 20, 1500.00,  85.50, DATE '2026-05-10', 'PENDING'),
+    (2, 18, 3000.00,  70.00, DATE '2026-05-11', 'PENDING'),
+    (3, 25,    0.00, 100.00, DATE '2026-05-12', 'PENDING'),
+    (4, 26, 2000.00,  82.00, DATE '2026-05-13', 'PENDING'),
+    (5, 21, 3000.01,  78.00, DATE '2026-05-14', 'PENDING'),
+    (6, 19, 2500.00,  69.99, DATE '2026-05-15', 'PENDING');
+INSERT 0 6
+SELECT * FROM students ORDER BY student_id;
+ student_id | student_number |    full_name    
+------------+----------------+-----------------
+          1 | STU-2026-001   | Mwansa Kangwa
+          2 | STU-2026-002   | Thandiwe Zulu
+          3 | STU-2026-003   | Kelvin Tembo
+          4 | STU-2026-004   | Natasha Lungu
+          5 | STU-2026-005   | Chileshe Mwanza
+          6 | STU-2026-006   | Bupe Nkonde
+(6 rows)
+
+SELECT * FROM applications ORDER BY application_id;
+ application_id | student_id | age_at_application | monthly_income | average_mark | submitted_on | status  
+----------------+------------+--------------------+----------------+--------------+--------------+---------
+              1 |          1 |                 20 |        1500.00 |        85.50 | 2026-05-10   | PENDING
+              2 |          2 |                 18 |        3000.00 |        70.00 | 2026-05-11   | PENDING
+              3 |          3 |                 25 |           0.00 |       100.00 | 2026-05-12   | PENDING
+              4 |          4 |                 26 |        2000.00 |        82.00 | 2026-05-13   | PENDING
+              5 |          5 |                 21 |        3000.01 |        78.00 | 2026-05-14   | PENDING
+              6 |          6 |                 19 |        2500.00 |        69.99 | 2026-05-15   | PENDING
+(6 rows)
+
+CREATE OR REPLACE FUNCTION fn_scholarship_eligible(
+    p_age    INTEGER,
+    p_income NUMERIC,
+    p_mark   NUMERIC
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+    IF p_age IS NULL OR p_income IS NULL OR p_mark IS NULL THEN
+        RAISE EXCEPTION 'Eligibility inputs (age, income, mark) cannot be NULL.';
+    END IF;
+
+    IF p_age <= 0 THEN
+        RAISE EXCEPTION 'Applicant age must be positive (got: %).', p_age;
+    END IF;
+
+    IF p_income < 0 THEN
+        RAISE EXCEPTION 'Monthly household income cannot be negative (got: %).', p_income;
+    END IF;
+
+    IF p_mark < 0 OR p_mark > 100 THEN
+        RAISE EXCEPTION 'Average mark must be between 0 and 100 inclusive (got: %).', p_mark;
+    END IF;
+
+    RETURN (p_age BETWEEN 18 AND 25)
+       AND (p_income <= 3000)
+       AND (p_mark >= 70);
+END;
+$$;
+CREATE FUNCTION
+SELECT
+    fn_scholarship_eligible(20, 1500.00, 85.50) AS std_qualifying,
+    fn_scholarship_eligible(18, 3000.00, 70.00) AS lower_boundary_ok,
+    fn_scholarship_eligible(25,    0.00, 100.00) AS upper_boundary_ok,
+    fn_scholarship_eligible(17, 1500.00, 85.00) AS age_17_ineligible,
+    fn_scholarship_eligible(26, 1500.00, 85.00) AS age_26_ineligible,
+    fn_scholarship_eligible(21, 3000.01, 80.00) AS income_over_ineligible,
+    fn_scholarship_eligible(19, 2500.00, 69.99) AS mark_under_ineligible;
+ std_qualifying | lower_boundary_ok | upper_boundary_ok | age_17_ineligible | age_26_ineligible | income_over_ineligible | mark_under_ineligible 
+----------------+-------------------+-------------------+-------------------+-------------------+------------------------+-----------------------
+ t              | t                 | t                 | f                 | f                 | f                      | f
+(1 row)
+
+DO $$
+BEGIN
+    PERFORM fn_scholarship_eligible(NULL, 1000.00, 80.00);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - NULL input]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:130: NOTICE:  [Expected Error - NULL input]: Eligibility inputs (age, income, mark) cannot be NULL.
+DO
+DO $$
+BEGIN
+    PERFORM fn_scholarship_eligible(0, 1000.00, 80.00);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - Non-positive age]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:138: NOTICE:  [Expected Error - Non-positive age]: Applicant age must be positive (got: 0).
+DO
+DO $$
+BEGIN
+    PERFORM fn_scholarship_eligible(20, -50.00, 80.00);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - Negative income]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:146: NOTICE:  [Expected Error - Negative income]: Monthly household income cannot be negative (got: -50.00).
+DO
+DO $$
+BEGIN
+    PERFORM fn_scholarship_eligible(20, 1000.00, 105.00);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - Mark > 100]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:154: NOTICE:  [Expected Error - Mark > 100]: Average mark must be between 0 and 100 inclusive (got: 105.00).
+DO
+CREATE OR REPLACE PROCEDURE pr_assess_application(p_application_id INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_app      applications%ROWTYPE;
+    v_eligible BOOLEAN;
+BEGIN
+    IF p_application_id IS NULL THEN
+        RAISE EXCEPTION 'Application ID cannot be NULL.';
+    END IF;
+
+    SELECT *
+    INTO v_app
+    FROM applications
+    WHERE application_id = p_application_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Application ID % does not exist.', p_application_id;
+    END IF;
+
+    IF v_app.status <> 'PENDING' THEN
+        RAISE EXCEPTION 'Application ID % has already been assessed (current status: %).',
+            p_application_id, v_app.status;
+    END IF;
+
+    v_eligible := fn_scholarship_eligible(
+        v_app.age_at_application,
+        v_app.monthly_income,
+        v_app.average_mark
+    );
+
+    UPDATE applications
+    SET status = CASE WHEN v_eligible THEN 'APPROVED' ELSE 'REJECTED' END
+    WHERE application_id = p_application_id;
+END;
+$$;
+CREATE PROCEDURE
+CREATE OR REPLACE FUNCTION fn_trg_audit_application_status()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.status IS DISTINCT FROM NEW.status THEN
+        INSERT INTO decision_audit (application_id, old_status, new_status, changed_at)
+        VALUES (NEW.application_id, OLD.status, NEW.status, CURRENT_TIMESTAMP);
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+CREATE FUNCTION
+CREATE TRIGGER trg_audit_application_status
+AFTER UPDATE ON applications
+FOR EACH ROW
+WHEN (OLD.status IS DISTINCT FROM NEW.status)
+EXECUTE FUNCTION fn_trg_audit_application_status();
+CREATE TRIGGER
+CALL pr_assess_application(1);
+CALL
+CALL pr_assess_application(4);
+CALL
+DO $$
+BEGIN
+    CALL pr_assess_application(999);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - Unknown application]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:245: NOTICE:  [Expected Error - Unknown application]: Application ID 999 does not exist.
+DO
+DO $$
+BEGIN
+    CALL pr_assess_application(1);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE '[Expected Error - Already assessed application]: %', SQLERRM;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:254: NOTICE:  [Expected Error - Already assessed application]: Application ID 1 has already been assessed (current status: APPROVED).
+DO
+UPDATE applications
+SET submitted_on = submitted_on, status = status
+WHERE application_id = 1;
+UPDATE 1
+SELECT audit_id, application_id, old_status, new_status, changed_at
+FROM decision_audit
+ORDER BY audit_id;
+ audit_id | application_id | old_status | new_status |         changed_at         
+----------+----------------+------------+------------+----------------------------
+        1 |              1 | PENDING    | APPROVED   | 2026-11-24 22:35:29.278232
+        2 |              4 | PENDING    | REJECTED   | 2026-11-24 22:35:29.282866
+(2 rows)
+
+CREATE OR REPLACE VIEW v_approved_applicants AS
+SELECT
+    s.student_number,
+    s.full_name,
+    a.average_mark,
+    a.status
+FROM applications a
+JOIN students s
+    ON s.student_id = a.student_id
+WHERE a.status = 'APPROVED';
+CREATE VIEW
+SELECT * FROM v_approved_applicants ORDER BY student_number;
+ student_number |   full_name   | average_mark |  status  
+----------------+---------------+--------------+----------
+ STU-2026-001   | Mwansa Kangwa |        85.50 | APPROVED
+(1 row)
+
+CREATE INDEX idx_applications_status_submitted
+ON applications (status, submitted_on);
+CREATE INDEX
+ANALYZE applications;
+ANALYZE
+SELECT
+    application_id, student_id, age_at_application, average_mark, submitted_on, status
+FROM applications
+WHERE status = 'PENDING'
+  AND submitted_on BETWEEN DATE '2026-05-10' AND DATE '2026-05-15'
+ORDER BY submitted_on;
+ application_id | student_id | age_at_application | average_mark | submitted_on | status  
+----------------+------------+--------------------+--------------+--------------+---------
+              2 |          2 |                 18 |        70.00 | 2026-05-11   | PENDING
+              3 |          3 |                 25 |       100.00 | 2026-05-12   | PENDING
+              5 |          5 |                 21 |        78.00 | 2026-05-14   | PENDING
+              6 |          6 |                 19 |        69.99 | 2026-05-15   | PENDING
+(4 rows)
+
+SET enable_seqscan = off;
+SET
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF)
+SELECT
+    application_id, student_id, age_at_application, average_mark, submitted_on, status
+FROM applications
+WHERE status = 'PENDING'
+  AND submitted_on BETWEEN DATE '2026-05-10' AND DATE '2026-05-15'
+ORDER BY submitted_on;
+                                                              QUERY PLAN                                                              
+--------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_applications_status_submitted on applications (actual rows=4.00 loops=1)
+   Index Cond: (((status)::text = 'PENDING'::text) AND (submitted_on >= '2026-05-10'::date) AND (submitted_on <= '2026-05-15'::date))
+   Index Searches: 1
+   Buffers: shared hit=1 read=1
+ Planning Time: 0.287 ms
+ Execution Time: 0.153 ms
+(6 rows)
+
+RESET enable_seqscan;
+RESET
+CREATE OR REPLACE PROCEDURE pr_assess_pending()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_app RECORD;
+BEGIN
+    FOR v_app IN
+        SELECT application_id
+        FROM applications
+        WHERE status = 'PENDING'
+        ORDER BY application_id
+    LOOP
+        CALL pr_assess_application(v_app.application_id);
+    END LOOP;
+END;
+$$;
+CREATE PROCEDURE
+CALL pr_assess_pending();
+CALL
+SELECT application_id, student_id, age_at_application, monthly_income, average_mark, status
+FROM applications
+ORDER BY application_id;
+ application_id | student_id | age_at_application | monthly_income | average_mark |  status  
+----------------+------------+--------------------+----------------+--------------+----------
+              1 |          1 |                 20 |        1500.00 |        85.50 | APPROVED
+              2 |          2 |                 18 |        3000.00 |        70.00 | APPROVED
+              3 |          3 |                 25 |           0.00 |       100.00 | APPROVED
+              4 |          4 |                 26 |        2000.00 |        82.00 | REJECTED
+              5 |          5 |                 21 |        3000.01 |        78.00 | REJECTED
+              6 |          6 |                 19 |        2500.00 |        69.99 | REJECTED
+(6 rows)
+
+SELECT audit_id, application_id, old_status, new_status, changed_at
+FROM decision_audit
+ORDER BY audit_id;
+ audit_id | application_id | old_status | new_status |         changed_at         
+----------+----------------+------------+------------+----------------------------
+        1 |              1 | PENDING    | APPROVED   | 2026-11-24 22:35:29.278232
+        2 |              4 | PENDING    | REJECTED   | 2026-11-24 22:35:29.282866
+        3 |              2 | PENDING    | APPROVED   | 2026-11-24 22:35:29.301658
+        4 |              3 | PENDING    | APPROVED   | 2026-11-24 22:35:29.301658
+        5 |              5 | PENDING    | REJECTED   | 2026-11-24 22:35:29.301658
+        6 |              6 | PENDING    | REJECTED   | 2026-11-24 22:35:29.301658
+(6 rows)
+
+CALL pr_assess_pending();
+CALL
+SELECT COUNT(*) AS total_audit_entries_after_rerun FROM decision_audit;
+ total_audit_entries_after_rerun 
+---------------------------------
+                               6
+(1 row)
+
+SELECT * FROM v_approved_applicants ORDER BY student_number;
+ student_number |   full_name   | average_mark |  status  
+----------------+---------------+--------------+----------
+ STU-2026-001   | Mwansa Kangwa |        85.50 | APPROVED
+ STU-2026-002   | Thandiwe Zulu |        70.00 | APPROVED
+ STU-2026-003   | Kelvin Tembo  |       100.00 | APPROVED
+(3 rows)
+
+DO $$
+DECLARE
+    v_job_id BIGINT;
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cron') THEN
+        CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+        SELECT jobid INTO v_job_id
+        FROM cron.job
+        WHERE jobname = 'q10_weekly_scholarship_assessment';
+
+        IF v_job_id IS NOT NULL THEN
+            PERFORM cron.unschedule(v_job_id);
+        END IF;
+
+        PERFORM cron.schedule(
+            'q10_weekly_scholarship_assessment',
+            '0 8 * * 1',
+            $cron$CALL q10_scholarship.pr_assess_pending();$cron$
+        );
+        RAISE NOTICE 'Scheduled pg_cron job q10_weekly_scholarship_assessment for Mondays at 08:00 (0 8 * * 1).';
+    ELSE
+        RAISE NOTICE 'pg_cron extension is not installed on this Windows PostgreSQL 18.6 server; schedule specification (0 8 * * 1 -> CALL q10_scholarship.pr_assess_pending()) verified via repeated procedure execution above.';
+    END IF;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_10/solution.sql:387: NOTICE:  pg_cron extension is not installed on this Windows PostgreSQL 18.6 server; schedule specification (0 8 * * 1 -> CALL q10_scholarship.pr_assess_pending()) verified via repeated procedure execution above.
+DO

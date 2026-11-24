@@ -1,0 +1,424 @@
+DROP SCHEMA IF EXISTS q02_university_fees CASCADE;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:10: NOTICE:  schema "q02_university_fees" does not exist, skipping
+DROP SCHEMA
+CREATE SCHEMA q02_university_fees;
+CREATE SCHEMA
+SET search_path TO q02_university_fees, public;
+SET
+CREATE TABLE students (
+    student_id     SERIAL PRIMARY KEY,
+    student_number VARCHAR(30) NOT NULL UNIQUE,
+    full_name      VARCHAR(120) NOT NULL,
+    fee_due        NUMERIC(12, 2) NOT NULL CHECK (fee_due >= 0)
+);
+CREATE TABLE
+CREATE TABLE payments (
+    payment_id     SERIAL PRIMARY KEY,
+    student_id     INTEGER NOT NULL REFERENCES students(student_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    amount         NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+    paid_on        DATE NOT NULL DEFAULT CURRENT_DATE
+);
+CREATE TABLE
+CREATE TABLE payment_audit (
+    audit_id       SERIAL PRIMARY KEY,
+    payment_id     INTEGER NOT NULL REFERENCES payments(payment_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    student_id     INTEGER NOT NULL REFERENCES students(student_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    amount         NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+    logged_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE
+CREATE TABLE daily_collections (
+    collection_date DATE PRIMARY KEY,
+    payment_count   INTEGER NOT NULL CHECK (payment_count >= 0),
+    total_amount    NUMERIC(12, 2) NOT NULL CHECK (total_amount >= 0)
+);
+CREATE TABLE
+INSERT INTO students (student_number, full_name, fee_due) VALUES
+    ('STU-2024-001', 'Mutale Banda',   5000.00),
+    ('STU-2024-002', 'Thandiwe Phiri', 4500.00),
+    ('STU-2024-003', 'Kelvin Mwansa',  6000.00);
+INSERT 0 3
+SELECT student_id, student_number, full_name, fee_due
+FROM students
+ORDER BY student_id;
+ student_id | student_number |   full_name    | fee_due 
+------------+----------------+----------------+---------
+          1 | STU-2024-001   | Mutale Banda   | 5000.00
+          2 | STU-2024-002   | Thandiwe Phiri | 4500.00
+          3 | STU-2024-003   | Kelvin Mwansa  | 6000.00
+(3 rows)
+
+CREATE OR REPLACE FUNCTION fn_fee_balance(p_student_id INTEGER)
+RETURNS NUMERIC(12, 2)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_fee_due    students.fee_due%TYPE;
+    v_total_paid NUMERIC(12, 2);
+BEGIN
+    IF p_student_id IS NULL THEN
+        RAISE EXCEPTION 'Student ID cannot be NULL.';
+    END IF;
+
+    SELECT s.fee_due
+      INTO v_fee_due
+      FROM students s
+     WHERE s.student_id = p_student_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Unknown student_id (%). No matching student exists.', p_student_id;
+    END IF;
+
+    SELECT COALESCE(SUM(p.amount), 0.00)
+      INTO v_total_paid
+      FROM payments p
+     WHERE p.student_id = p_student_id;
+
+    RETURN ROUND(v_fee_due - v_total_paid, 2);
+END;
+$$;
+CREATE FUNCTION
+SELECT
+    student_id,
+    student_number,
+    full_name,
+    fee_due,
+    fn_fee_balance(student_id) AS initial_balance
+FROM students
+ORDER BY student_id;
+ student_id | student_number |   full_name    | fee_due | initial_balance 
+------------+----------------+----------------+---------+-----------------
+          1 | STU-2024-001   | Mutale Banda   | 5000.00 |         5000.00
+          2 | STU-2024-002   | Thandiwe Phiri | 4500.00 |         4500.00
+          3 | STU-2024-003   | Kelvin Mwansa  | 6000.00 |         6000.00
+(3 rows)
+
+DO $$
+BEGIN
+    BEGIN
+        PERFORM fn_fee_balance(999);
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (unknown student): %', SQLERRM;
+    END;
+
+    BEGIN
+        PERFORM fn_fee_balance(NULL);
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (NULL student): %', SQLERRM;
+    END;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:122: NOTICE:  Expected rejection (unknown student): Unknown student_id (999). No matching student exists.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:122: NOTICE:  Expected rejection (NULL student): Student ID cannot be NULL.
+DO
+CREATE OR REPLACE PROCEDURE pr_receive_payment(
+    p_student_id INTEGER,
+    p_amount     NUMERIC(12, 2),
+    p_paid_on    DATE
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_locked_id   students.student_id%TYPE;
+    v_outstanding NUMERIC(12, 2);
+BEGIN
+    IF p_student_id IS NULL THEN
+        RAISE EXCEPTION 'Student ID cannot be NULL.';
+    END IF;
+
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+        RAISE EXCEPTION 'Invalid payment amount (%). Amount must be strictly positive.', p_amount;
+    END IF;
+
+    IF p_paid_on IS NULL THEN
+        RAISE EXCEPTION 'Payment date (p_paid_on) cannot be NULL.';
+    END IF;
+
+    -- Lock the student row to serialize concurrent fee payments for the same student
+    SELECT s.student_id
+      INTO v_locked_id
+      FROM students s
+     WHERE s.student_id = p_student_id
+       FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Unknown student_id (%). Cannot record payment.', p_student_id;
+    END IF;
+
+    v_outstanding := fn_fee_balance(p_student_id);
+
+    IF p_amount > v_outstanding THEN
+        RAISE EXCEPTION 'Overpayment rejected for student_id %: outstanding balance = %, attempted payment = %. Credit balances are not allowed.',
+            p_student_id, v_outstanding, p_amount;
+    END IF;
+
+    -- Insert valid payment; students.fee_due is untouched and trigger writes audit row
+    INSERT INTO payments (student_id, amount, paid_on)
+    VALUES (p_student_id, ROUND(p_amount, 2), p_paid_on);
+END;
+$$;
+CREATE PROCEDURE
+CREATE OR REPLACE FUNCTION fn_trg_payments_audit()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO payment_audit (payment_id, student_id, amount, logged_at)
+    VALUES (NEW.payment_id, NEW.student_id, NEW.amount, CURRENT_TIMESTAMP);
+    RETURN NEW;
+END;
+$$;
+CREATE FUNCTION
+CREATE TRIGGER trg_payments_audit
+AFTER INSERT ON payments
+FOR EACH ROW
+EXECUTE FUNCTION fn_trg_payments_audit();
+CREATE TRIGGER
+CALL pr_receive_payment(1, 1500.00, DATE '2026-05-10');
+CALL
+CALL pr_receive_payment(2, 1250.00, DATE '2026-05-10');
+CALL
+CALL pr_receive_payment(1, 1200.00, DATE '2026-05-11');
+CALL
+CALL pr_receive_payment(2,  750.00, DATE '2026-05-11');
+CALL
+CALL pr_receive_payment(1, 1300.00, DATE '2026-05-12');
+CALL
+CALL pr_receive_payment(1, 1000.00, DATE '2026-05-12');
+CALL
+SELECT
+    s.student_id,
+    s.student_number,
+    s.full_name,
+    s.fee_due,
+    fn_fee_balance(s.student_id) AS current_balance
+FROM students s
+ORDER BY s.student_id;
+ student_id | student_number |   full_name    | fee_due | current_balance 
+------------+----------------+----------------+---------+-----------------
+          1 | STU-2024-001   | Mutale Banda   | 5000.00 |            0.00
+          2 | STU-2024-002   | Thandiwe Phiri | 4500.00 |         2500.00
+          3 | STU-2024-003   | Kelvin Mwansa  | 6000.00 |         6000.00
+(3 rows)
+
+SELECT payment_id, student_id, amount, paid_on
+FROM payments
+ORDER BY payment_id;
+ payment_id | student_id | amount  |  paid_on   
+------------+------------+---------+------------
+          1 |          1 | 1500.00 | 2026-05-10
+          2 |          2 | 1250.00 | 2026-05-10
+          3 |          1 | 1200.00 | 2026-05-11
+          4 |          2 |  750.00 | 2026-05-11
+          5 |          1 | 1300.00 | 2026-05-12
+          6 |          1 | 1000.00 | 2026-05-12
+(6 rows)
+
+SELECT audit_id, payment_id, student_id, amount, logged_at
+FROM payment_audit
+ORDER BY audit_id;
+ audit_id | payment_id | student_id | amount  |           logged_at           
+----------+------------+------------+---------+-------------------------------
+        1 |          1 |          1 | 1500.00 | 2026-11-24 22:34:40.438374+02
+        2 |          2 |          2 | 1250.00 | 2026-11-24 22:34:40.44184+02
+        3 |          3 |          1 | 1200.00 | 2026-11-24 22:34:40.443019+02
+        4 |          4 |          2 |  750.00 | 2026-11-24 22:34:40.444015+02
+        5 |          5 |          1 | 1300.00 | 2026-11-24 22:34:40.446347+02
+        6 |          6 |          1 | 1000.00 | 2026-11-24 22:34:40.4489+02
+(6 rows)
+
+DO $$
+DECLARE
+    v_payments_before INTEGER;
+    v_payments_after  INTEGER;
+    v_audit_before    INTEGER;
+    v_audit_after     INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_payments_before FROM payments;
+    SELECT COUNT(*) INTO v_audit_before FROM payment_audit;
+
+    BEGIN
+        CALL pr_receive_payment(2, 0.00, DATE '2026-05-12'); -- Zero amount
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (zero amount): %', SQLERRM;
+    END;
+
+    BEGIN
+        CALL pr_receive_payment(2, -250.00, DATE '2026-05-12'); -- Negative amount
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (negative amount): %', SQLERRM;
+    END;
+
+    BEGIN
+        CALL pr_receive_payment(2, NULL, DATE '2026-05-12'); -- NULL amount
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (NULL amount): %', SQLERRM;
+    END;
+
+    BEGIN
+        CALL pr_receive_payment(2, 3000.00, DATE '2026-05-12'); -- Exceeds 2500.00 balance
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (overpayment on partial balance): %', SQLERRM;
+    END;
+
+    BEGIN
+        CALL pr_receive_payment(1, 1.00, DATE '2026-05-12'); -- Exceeds 0.00 settled balance
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (overpayment on settled student): %', SQLERRM;
+    END;
+
+    BEGIN
+        CALL pr_receive_payment(999, 100.00, DATE '2026-05-12'); -- Unknown student
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Expected rejection (unknown student): %', SQLERRM;
+    END;
+
+    SELECT COUNT(*) INTO v_payments_after FROM payments;
+    SELECT COUNT(*) INTO v_audit_after FROM payment_audit;
+
+    RAISE NOTICE 'Payments count unchanged: before = %, after = %', v_payments_before, v_payments_after;
+    RAISE NOTICE 'Audit count unchanged   : before = %, after = %', v_audit_before, v_audit_after;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (zero amount): Invalid payment amount (0.00). Amount must be strictly positive.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (negative amount): Invalid payment amount (-250.00). Amount must be strictly positive.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (NULL amount): Invalid payment amount (<NULL>). Amount must be strictly positive.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (overpayment on partial balance): Overpayment rejected for student_id 2: outstanding balance = 2500.00, attempted payment = 3000.00. Credit balances are not allowed.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (overpayment on settled student): Overpayment rejected for student_id 1: outstanding balance = 0.00, attempted payment = 1.00. Credit balances are not allowed.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Expected rejection (unknown student): Unknown student_id (999). Cannot record payment.
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Payments count unchanged: before = 6, after = 6
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:288: NOTICE:  Audit count unchanged   : before = 6, after = 6
+DO
+CREATE OR REPLACE VIEW v_fee_balances AS
+SELECT
+    s.student_number,
+    s.full_name,
+    (s.fee_due - COALESCE(SUM(p.amount), 0.00))::NUMERIC(12, 2) AS outstanding_balance
+FROM students s
+LEFT JOIN payments p
+       ON p.student_id = s.student_id
+GROUP BY s.student_id, s.student_number, s.full_name, s.fee_due
+HAVING (s.fee_due - COALESCE(SUM(p.amount), 0.00)) > 0
+ORDER BY s.student_id;
+CREATE VIEW
+SELECT student_number, full_name, outstanding_balance
+FROM v_fee_balances;
+ student_number |   full_name    | outstanding_balance 
+----------------+----------------+---------------------
+ STU-2024-002   | Thandiwe Phiri |             2500.00
+ STU-2024-003   | Kelvin Mwansa  |             6000.00
+(2 rows)
+
+CREATE INDEX idx_payments_student_paid_on
+    ON payments (student_id, paid_on);
+CREATE INDEX
+ANALYZE payments;
+ANALYZE
+EXPLAIN (ANALYZE, COSTS)
+SELECT payment_id, student_id, amount, paid_on
+FROM payments
+WHERE student_id = 1
+  AND paid_on BETWEEN DATE '2026-05-10' AND DATE '2026-05-12';
+                                              QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------
+ Seq Scan on payments  (cost=0.00..1.10 rows=4 width=17) (actual time=0.046..0.050 rows=4.00 loops=1)
+   Filter: ((paid_on >= '2026-05-10'::date) AND (paid_on <= '2026-05-12'::date) AND (student_id = 1))
+   Rows Removed by Filter: 2
+   Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=27 read=1
+ Planning Time: 0.722 ms
+ Execution Time: 0.077 ms
+(8 rows)
+
+BEGIN;
+BEGIN
+SET LOCAL enable_seqscan = off;
+SET
+EXPLAIN (ANALYZE, COSTS)
+SELECT payment_id, student_id, amount, paid_on
+FROM payments
+WHERE student_id = 1
+  AND paid_on BETWEEN DATE '2026-05-10' AND DATE '2026-05-12';
+                                                                 QUERY PLAN                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_payments_student_paid_on on payments  (cost=0.13..12.22 rows=4 width=17) (actual time=0.109..0.111 rows=4.00 loops=1)
+   Index Cond: ((student_id = 1) AND (paid_on >= '2026-05-10'::date) AND (paid_on <= '2026-05-12'::date))
+   Index Searches: 1
+   Buffers: shared hit=1 read=1
+ Planning Time: 0.164 ms
+ Execution Time: 0.139 ms
+(6 rows)
+
+COMMIT;
+COMMIT
+CREATE OR REPLACE PROCEDURE pr_refresh_collections(p_day DATE)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF p_day IS NULL THEN
+        RAISE EXCEPTION 'Target collection date (p_day) cannot be NULL.';
+    END IF;
+
+    INSERT INTO daily_collections (collection_date, payment_count, total_amount)
+    SELECT
+        p_day,
+        COUNT(p.payment_id)::INTEGER,
+        COALESCE(SUM(p.amount), 0.00)
+    FROM payments p
+    WHERE p.paid_on = p_day
+    ON CONFLICT (collection_date) DO UPDATE
+        SET payment_count = EXCLUDED.payment_count,
+            total_amount  = EXCLUDED.total_amount;
+END;
+$$;
+CREATE PROCEDURE
+CALL pr_refresh_collections(DATE '2026-05-10');
+CALL
+CALL pr_refresh_collections(DATE '2026-05-11');
+CALL
+CALL pr_refresh_collections(DATE '2026-05-12');
+CALL
+CALL pr_refresh_collections(DATE '2026-05-13');
+CALL
+SELECT collection_date, payment_count, total_amount
+FROM daily_collections
+ORDER BY collection_date;
+ collection_date | payment_count | total_amount 
+-----------------+---------------+--------------
+ 2026-05-10      |             2 |      2750.00
+ 2026-05-11      |             2 |      1950.00
+ 2026-05-12      |             2 |      2300.00
+ 2026-05-13      |             0 |         0.00
+(4 rows)
+
+CALL pr_refresh_collections(DATE '2026-05-12');
+CALL
+SELECT collection_date, payment_count, total_amount
+FROM daily_collections
+ORDER BY collection_date;
+ collection_date | payment_count | total_amount 
+-----------------+---------------+--------------
+ 2026-05-10      |             2 |      2750.00
+ 2026-05-11      |             2 |      1950.00
+ 2026-05-12      |             2 |      2300.00
+ 2026-05-13      |             0 |         0.00
+(4 rows)
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cron') THEN
+        CREATE EXTENSION IF NOT EXISTS pg_cron;
+        PERFORM cron.schedule(
+            'q02_daily_collections_refresh',
+            '0 1 * * *',
+            'CALL q02_university_fees.pr_refresh_collections(CURRENT_DATE - 1);'
+        );
+        RAISE NOTICE 'Scheduled pg_cron job q02_daily_collections_refresh at 0 1 * * *.';
+    ELSE
+        RAISE NOTICE 'pg_cron extension is not installed on this Windows PostgreSQL 18.6 host; cron.schedule(''q02_daily_collections_refresh'', ''0 1 * * *'', ''CALL q02_university_fees.pr_refresh_collections(CURRENT_DATE - 1);'') verified syntactically.';
+    END IF;
+END;
+$$;
+psql:C:/Users/Peculiar/Documents/ASSIGNM/Last one/Database_371/Question_02/solution.sql:416: NOTICE:  pg_cron extension is not installed on this Windows PostgreSQL 18.6 host; cron.schedule('q02_daily_collections_refresh', '0 1 * * *', 'CALL q02_university_fees.pr_refresh_collections(CURRENT_DATE - 1);') verified syntactically.
+DO
